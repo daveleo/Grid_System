@@ -10,9 +10,17 @@ the uncovered part of the lower cabinet is drawn.
 Outputs (in ./output):
   <name>_cabinets.svg / .png   - exact screen raster, one cell per cabinet
   <name>_modules.svg  / .png   - exact screen raster, one cell per module
-  *_3840x2160.png              - same, placed at 0,0 on a UHD black canvas
+  *_<W>x<H>.png                - same, placed at 0,0 on the sending card's output
+                                 resolution (3840x2160 when not read from a file)
+
+Usage:
+  python3 make_grid.py                          # built-in CARDS table below
+  python3 make_grid.py screens/Cube.scr         # NovaLCT screen-connection file
+  python3 make_grid.py screens/Cube.scr --name "Cube" --module 87x174
 """
+import argparse
 import os
+import struct
 
 import cairosvg
 
@@ -46,6 +54,31 @@ UHD = (3840, 2160)
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 
 
+def load_scr(path):
+    """Read a NovaLCT screen-connection file (.scr, "DSCI" header).
+
+    Layout reverse-engineered from a single-screen, single-sending-card file:
+      0x3C  u16 LE x2   sending card output width, height
+      0x141 u8          number of receiving cards
+      0x145 16-byte records:
+            u8 sending card, u8 port, u16 LE receiving card (all 0-based),
+            u16 LE StartX, u16 LE StartY, 4 bytes (unknown, 0 in sample),
+            u16 LE Width, u16 LE Height
+    Returns (cards, (out_w, out_h)) with 1-based indices like the NovaLCT UI.
+    """
+    with open(path, "rb") as f:
+        d = f.read()
+    if d[:4] != b"DSCI":
+        raise ValueError(f"{path}: not a NovaLCT .scr file (missing DSCI header)")
+    out = struct.unpack_from("<HH", d, 0x3C)
+    count = d[0x141]
+    cards = []
+    for i in range(count):
+        s, p, rc, x, y, _unk, w, h = struct.unpack_from("<BBHHHIHH", d, 0x145 + i * 16)
+        cards.append((s + 1, p + 1, rc + 1, x, y, w, h))
+    return cards, out
+
+
 def visible_rects(cards):
     """Clip each cabinet vertically by any overlapping cabinet that starts higher."""
     result = []
@@ -75,7 +108,7 @@ def text(x, y, s, size, fill="#ffffff", anchor="start", weight="normal"):
             f'font-weight="{weight}" fill="{fill}" text-anchor="{anchor}">{s}</text>')
 
 
-def build(kind, rects, W, H):
+def build(kind, rects, W, H, name):
     parts = []
     clip = "".join(f'<rect x="{x}" y="{y}" width="{w}" height="{h}"/>' for _, (x, y, w, h) in rects)
 
@@ -103,7 +136,7 @@ def build(kind, rects, W, H):
                     k = ((my // MODULE_H) + (mx // MODULE_W)) % 3
                     parts.append(cell(mx, my, MODULE_W, MODULE_H, BG[k], LINE[k]))
                     parts.append(text(mx + 3, my + 16, cab_id, 14, weight="bold"))
-                    parts.append(text(mx + 3, my + 34, f"M{mr * 3 + mc + 1}", 14))
+                    parts.append(text(mx + 3, my + 34, f"M{mr * (cw // MODULE_W) + mc + 1}", 14))
             # cabinet outline on top of modules
             parts.append(f'<rect x="{x + 1}" y="{y + 1}" width="{w - 2}" height="{h - 2}" '
                          f'fill="none" stroke="#ffffff" stroke-width="2"/>')
@@ -133,9 +166,10 @@ def build(kind, rects, W, H):
         f'orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="{c}"/></marker>'
         for p, c in PORT_COLORS.items())
 
-    title = f"{NAME} - {'Cabinets' if kind == 'cabinets' else 'Modules'} Mapping  {W}x{H}"
-    # title sits in the long bottom strip, right of the tall section
-    parts.append(text(526, H - 30, title, 22, fill=LABEL_COLOR))
+    title = f"{name} - {'Cabinets' if kind == 'cabinets' else 'Modules'} Mapping  {W}x{H}"
+    # title in the bottom strip, next to the lowest-left cabinet's coordinates line
+    tx = min(x for _, (x, y, w, h) in rects if y + h == H)
+    parts.append(text(tx + 4, H - 30, title, 22, fill=LABEL_COLOR))
 
     return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" '
             f'shape-rendering="crispEdges">'
@@ -145,27 +179,43 @@ def build(kind, rects, W, H):
 
 
 def main():
+    global MODULE_W, MODULE_H
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("scr", nargs="?", help="NovaLCT .scr file (default: built-in CARDS)")
+    ap.add_argument("--name", help="title / output file prefix")
+    ap.add_argument("--module", help=f"module size WxH in pixels (default {MODULE_W}x{MODULE_H})")
+    args = ap.parse_args()
+
+    cards, out = CARDS, UHD
+    name = NAME
+    if args.scr:
+        cards, out = load_scr(args.scr)
+        name = os.path.splitext(os.path.basename(args.scr))[0]
+    name = args.name or name
+    if args.module:
+        MODULE_W, MODULE_H = (int(v) for v in args.module.lower().split("x"))
+
     os.makedirs(OUT_DIR, exist_ok=True)
-    rects = visible_rects(CARDS)
+    rects = visible_rects(cards)
     W = max(x + w for _, (x, y, w, h) in rects)
     H = max(y + h for _, (x, y, w, h) in rects)
-    base = NAME.replace(" ", "_")
+    base = name.replace(" ", "_")
     for kind in ("cabinets", "modules"):
-        svg = build(kind, rects, W, H)
+        svg = build(kind, rects, W, H, name)
         svg_path = os.path.join(OUT_DIR, f"{base}_{kind}.svg")
         with open(svg_path, "w") as f:
             f.write(svg)
         cairosvg.svg2png(bytestring=svg.encode(), write_to=svg_path[:-4] + ".png",
                          output_width=W, output_height=H)
         uhd = svg.replace(f'width="{W}" height="{H}" viewBox="0 0 {W} {H}"',
-                          f'width="{UHD[0]}" height="{UHD[1]}" viewBox="0 0 {UHD[0]} {UHD[1]}"', 1)
+                          f'width="{out[0]}" height="{out[1]}" viewBox="0 0 {out[0]} {out[1]}"', 1)
         uhd = uhd.replace(f'<rect width="{W}" height="{H}" fill="#000000"/>',
-                          f'<rect width="{UHD[0]}" height="{UHD[1]}" fill="#000000"/>', 1)
+                          f'<rect width="{out[0]}" height="{out[1]}" fill="#000000"/>', 1)
         cairosvg.svg2png(bytestring=uhd.encode(),
-                         write_to=svg_path[:-4] + f"_{UHD[0]}x{UHD[1]}.png")
+                         write_to=svg_path[:-4] + f"_{out[0]}x{out[1]}.png")
         print("wrote", svg_path, f"{W}x{H}")
     for card, r in rects:
-        print(f"  {card[1]}-{card[2]}: visible {r}")
+        print(f"  {card[0]}-{card[1]}-{card[2]}: visible {r}")
 
 
 if __name__ == "__main__":
