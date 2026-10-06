@@ -40,3 +40,17 @@ multiple sending cards and rotation are not confirmed yet.
 NovaLCT gives each cabinet its full size (261x348); where cabinets overlap, the one
 with the smaller StartY wins (as drawn in NovaLCT), so the "half" cabinets 1-1-3 and
 1-1-4 show only their uncovered 261x174 part (y 348-522).
+
+## Writing .scr files
+
+`make_scr.py` goes the other way: it writes a NovaLCT `.scr` from a JSON layout
+listing each port's receiving cards in data order (`[StartX, StartY, Width, Height]`,
+first entry = where the cable from the processor enters):
+
+    python3 make_scr.py layouts/Test_2x8.json screens/Test_2x8.scr
+    python3 make_grid.py screens/Test_2x8.scr --names "Test 2x8"   # check it visually
+
+The writer uses `screens/Cube.scr` as a template (one complex screen on sending card 1),
+replaces the screen table and recomputes the checksums: the u16 at 0x04 is the byte sum
+of 0x06 to the end of the JSON block, and sections 1001/1006/1002 each carry a u16 byte
+sum of their payload. Rebuilding Cube.scr from its own data gives a byte-identical file.
