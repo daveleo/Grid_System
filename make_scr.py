@@ -22,6 +22,7 @@ output resolution and the checksums are replaced. File layout (see make_grid.loa
   0x0E  u32  length of the trailing section (after the JSON block)
   0x36  section 1001: u16 id, u16 byte sum of 0x3A..0xB5, payload (output W/H at 0x3C)
   0xB6  section 1006: u16 id, u16 byte sum of 0xBA..end of JSON, screens + JSON
+  0xD2  u32  length of 0xB6 .. end of the screen blocks (start of the JSON block)
   ...   section 1002: u16 id, u16 byte sum of its payload (per-screen settings)
 
 Usage:
@@ -59,14 +60,33 @@ def build_scr(cabinets, output=None, template=TEMPLATE):
     d = t[:0x13A] + bytes([1]) + struct.pack("<I", len(block)) + block + tail
     if output:
         struct.pack_into("<HH", d, 0x3C, *output)
-    jend = 0x13F + len(block) + 2 + json_len
+    send = 0x13F + len(block)                        # end of screens = JSON length field
+    jend = send + 2 + json_len
 
+    struct.pack_into("<I", d, 0xD2, send - 0xB6)            # inside section 1006: before its sum
     struct.pack_into("<H", d, 0x38, u16sum(d[0x3A:0xB6]))   # section 1001
     struct.pack_into("<H", d, 0xB8, u16sum(d[0xBA:jend]))   # section 1006
     struct.pack_into("<I", d, 0x0A, jend - 0xB6)
     struct.pack_into("<I", d, 0x0E, len(d) - jend)
     struct.pack_into("<H", d, 0x04, u16sum(d[0x06:jend]))   # whole file
     return bytes(d)
+
+
+def check_scr(d):
+    """Return a list of problems with the length and checksum fields of a .scr file."""
+    n = d[0x13A]
+    send = 0x13B + 4 * n + sum(struct.unpack_from(f"<{n}I", d, 0x13B))
+    jend = send + 2 + struct.unpack_from("<H", d, send)[0]
+    want = {
+        "file checksum @0x04": (struct.unpack_from("<H", d, 0x04)[0], u16sum(d[0x06:jend])),
+        "length @0x0A": (struct.unpack_from("<I", d, 0x0A)[0], jend - 0xB6),
+        "trailer length @0x0E": (struct.unpack_from("<I", d, 0x0E)[0], len(d) - jend),
+        "section 1001 checksum": (struct.unpack_from("<H", d, 0x38)[0], u16sum(d[0x3A:0xB6])),
+        "section 1006 checksum": (struct.unpack_from("<H", d, 0xB8)[0], u16sum(d[0xBA:jend])),
+        "screens length @0xD2": (struct.unpack_from("<I", d, 0xD2)[0], send - 0xB6),
+        "section 1002 checksum": (struct.unpack_from("<H", d, jend + 2)[0], u16sum(d[jend + 4:])),
+    }
+    return [f"{k}: {have} != {exp}" for k, (have, exp) in want.items() if have != exp]
 
 
 def load_layout(path):
@@ -84,6 +104,9 @@ def main():
         sys.exit(__doc__.split("Usage:")[1])
     cabinets, output = load_layout(sys.argv[1])
     data = build_scr(cabinets, output)
+    problems = check_scr(data)
+    if problems:
+        sys.exit("internal error, not writing file:\n  " + "\n  ".join(problems))
     with open(sys.argv[2], "wb") as f:
         f.write(data)
     print(f"wrote {sys.argv[2]}: {len(cabinets)} receiving cards, {len(data)} bytes")
