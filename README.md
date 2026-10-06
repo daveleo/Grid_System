@@ -19,7 +19,7 @@ plus a PNG padded to the sending card's output resolution.
 | Offset | Type | Meaning |
 |---|---|---|
 | 0x00 | 4 bytes | `DSCI` magic |
-| 0x3C | u16 LE ×2 | sending card output width, height |
+| 0x3C | u16 LE ×2 | "Screen Area" width, height from the dialog (not enforced) |
 | 0x13A | u8 + N×u32 | screen count N, then the byte size of each screen block |
 | … | blocks | screen blocks back to back, then u16 length + JSON (per-screen corner points) |
 
@@ -53,4 +53,6 @@ first entry = where the cable from the processor enters):
 The writer uses `screens/Cube.scr` as a template (one complex screen on sending card 1),
 replaces the screen table and recomputes the checksums: the u16 at 0x04 is the byte sum
 of 0x06 to the end of the JSON block, and sections 1001/1006/1002 each carry a u16 byte
-sum of their payload. Rebuilding Cube.scr from its own data gives a byte-identical file.
+sum of their payload. Rebuilding Cube.scr from its own data gives a byte-identical file,
+and the 2x8 test layout with `"output": [2304, 1536]` is byte-identical to
+`screens/Working_2x8.scr`, the same screen built by hand in NovaLCT.

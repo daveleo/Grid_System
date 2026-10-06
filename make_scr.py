@@ -5,7 +5,7 @@ The layout is a JSON file listing, per sending-card port, the receiving cards in
 data order (the first entry is where the cable from the processor enters):
 
   {
-    "output": [3840, 2160],                 # optional, sending card resolution
+    "output": [3840, 2160],                 # optional, value at 0x3C (see below)
     "ports": {
       "1": [[0, 640, 512, 384], [0, 256, 512, 384], [0, 0, 512, 256]],
       "2": [[512, 640, 512, 384], ...]
@@ -20,7 +20,8 @@ output resolution and the checksums are replaced. File layout (see make_grid.loa
   0x04  u16  byte sum of 0x06 .. end of the JSON block
   0x0A  u32  length of 0xB6 .. end of the JSON block
   0x0E  u32  length of the trailing section (after the JSON block)
-  0x36  section 1001: u16 id, u16 byte sum of 0x3A..0xB5, payload (output W/H at 0x3C)
+  0x36  section 1001: u16 id, u16 byte sum of 0x3A..0xB5, payload; u16 W/H at 0x3C
+        (NovaLCT stores the dialog's "Screen Area" there; it does not limit the layout)
   0xB6  section 1006: u16 id, u16 byte sum of 0xBA..end of JSON, screens + JSON
   0xD2  u32  length of 0xB6 .. end of the screen blocks (start of the JSON block)
   ...   section 1002: u16 id, u16 byte sum of its payload (per-screen settings)
