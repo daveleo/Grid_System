@@ -5,7 +5,7 @@ priority:
 version:
 deadline:
 next: Plan how it feeds the Manuals & LED site pipeline (shared data format with site.json)
-updated: 2026-10-07
+updated: 2026-10-12
 repo: daveleo/Grid_System
 url:
 ---
@@ -45,11 +45,12 @@ Labels follow NovaLCT numbering: sending card-port-receiving card, 1-based.
 - `screens\`: NovaLCT screen files (showroom, Cube, test layouts, samples).
 - `layouts\`: JSON layouts for `make_scr.py`.
 - `output\`: generated grids.
+- `local\`: customer `.scr` files and their grids (git-ignored; the repo is public).
 - `README.md`: the decoded `.scr` file format, overlapping cabinets, checksum rules.
 
 ## Current state
 
-Working generator (`make_grid.py`, `make_scr.py`); last change 2026-10-06 (NovaLCT 1024x2944 sample and comparison). Downloaded to `D:\Work\projects\grid-system` on 2026-10-07; before that it existed only on GitHub.
+Working generator (`make_grid.py`, `make_scr.py`). 2026-10-12: standard-screen parsing fixed (it ran off the block on a customer file without the 15-byte tail), overview per sending card, readable maps for small cabinets and strip screens, `cairosvg` optional (no Cairo on this PC: SVG only), `--out`, `local/` ignored for customer files because the repo is **public**. Earlier: 2026-10-06 NovaLCT 1024x2944 sample and comparison. Downloaded to `D:\Work\projects\grid-system` on 2026-10-07; before that it existed only on GitHub.
 
 **Flagged for follow-up:** integrate with the Manuals & LED site pipeline. Older overlapping repos exgrid and led-layout-tool are to be reviewed and archived.
 

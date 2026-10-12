@@ -17,12 +17,16 @@ Usage:
   python3 make_grid.py                          # built-in CARDS table below
   python3 make_grid.py screens/Showroom_all.scr # NovaLCT screen-connection file
   python3 make_grid.py screens/Cube.scr --names "Cube" --module 87x174
+  python3 make_grid.py local/site.scr --out local/output   # customer files stay out of the repo
 """
 import argparse
 import os
 import struct
 
-import cairosvg
+try:
+    import cairosvg
+except ImportError:  # cairosvg needs the Cairo library; without it only the SVGs are written
+    cairosvg = None
 
 NAME = "Showroom LED"
 
@@ -67,16 +71,16 @@ OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 def load_scr(path):
     """Read a NovaLCT screen-connection file (.scr, "DSCI" header).
 
-    Layout reverse-engineered from sample files (one sending card):
+    Layout reverse-engineered from sample files:
       0x3C   u16 LE x2   sending card output width, height
       0x13A  u8          number of screens N, then N x u32 LE screen block sizes,
                          then the screen blocks back to back
       Standard screen block (type 1):
-        u8 1, u8 ?, u16 X, u16 Y, u16 cols, u16 rows, u8 ?,
+        u8 1, u8 ?, u16 X, u16 Y, u16 cols, u16 rows,
         cols*rows x 17-byte records:
-          u8 port, u16 receiving card (0-based), u16 StartX, u16 StartY,
-          u16 col, u16 row, u16 Width, u16 Height, u16 ? (1)
-        then a 14-byte trailer
+          u8 sending card, u8 port, u16 receiving card (all 0-based), u16 StartX, u16 StartY,
+          u16 col, u16 row, u16 Width, u16 Height, u8 ? (1)
+        then 15 bytes in some files and nothing in others (ignored)
       Complex screen block (type 2):
         u8 2, u8 ?, u16 count, u16 ?,
         count x 16-byte records:
@@ -98,10 +102,12 @@ def load_scr(path):
         b = d[off:off + size]
         cabinets = []
         if b[0] == 1:
-            _, _, _, cols, rows, _ = struct.unpack_from("<BHHHHB", b, 1)
+            cols, rows = struct.unpack_from("<HH", b, 6)
+            if 10 + cols * rows * 17 > size:
+                raise ValueError(f"{path}: screen at {off:#x}: {cols}x{rows} cabinets don't fit in {size} bytes")
             for i in range(cols * rows):
-                p, rc, x, y, _col, _row, w, h, _ = struct.unpack_from("<BHHHHHHHH", b, 11 + i * 17)
-                cabinets.append((1, p + 1, rc + 1, x, y, w, h))
+                s, p, rc, x, y, _col, _row, w, h, _ = struct.unpack_from("<BBHHHHHHHB", b, 10 + i * 17)
+                cabinets.append((s + 1, p + 1, rc + 1, x, y, w, h))
         elif b[0] == 2:
             count = struct.unpack_from("<H", b, 2)[0]
             for i in range(count):
@@ -155,6 +161,10 @@ def port_color(port):
     return PORT_COLORS[(port - 1) % len(PORT_COLORS)]
 
 
+STRIP = 10    # cells lower than this are strips: colour only, no text, no data path
+COMPACT = 100  # cells smaller than this (either side) show only their ID
+
+
 def draw_screen(kind, screen, idx):
     """SVG elements for one screen, in sending-card (absolute) coordinates."""
     rects, name, (mod_w, mod_h) = screen["rects"], screen["name"], screen["module"]
@@ -162,6 +172,7 @@ def draw_screen(kind, screen, idx):
     parts = []
     clip = "".join(f'<rect x="{x}" y="{y}" width="{w}" height="{h}"/>' for _, (x, y, w, h) in rects)
     parts.append(f'<clipPath id="screen{idx}">{clip}</clipPath>')
+    compact = all(min(w, h) < COMPACT for _, (x, y, w, h) in rects)
 
     tops = sorted({r[1] for _, r in rects})
     lefts = sorted({r[0] for _, r in rects})
@@ -172,8 +183,15 @@ def draw_screen(kind, screen, idx):
         half = h < ch
         unit = min(w, ch)  # font scale from the full cabinet size
         if kind == "cabinets":
+            if h < STRIP:  # solid colour; neighbours in the chain differ
+                parts.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="{LINE[rc % 3]}"/>')
+                continue
             k = (row + col) % 3
             parts.append(cell(x, y, w, h, BG[k], LINE[k]))
+            if min(w, h) < COMPACT:
+                fs = min(h * 0.5, w / len(cab_id) * 1.65, 44)
+                parts.append(text(x + w / 2, y + h * 0.5 + 1, cab_id, fs, anchor="middle", weight="bold"))
+                continue
             big = min(unit * 0.2, 44, w / len(cab_id) * 1.6)
             small = max(10, min(16, unit * 0.085))
             parts.append(text(x + w / 2, y + h / 2 + big * 0.35, cab_id, big, anchor="middle", weight="bold"))
@@ -190,6 +208,8 @@ def draw_screen(kind, screen, idx):
                     k = ((my - Y0) // mod_h + (mx - X0) // mod_w) % 3
                     mw, mh = min(mod_w, x + w - mx), min(mod_h, y + h - my)
                     parts.append(cell(mx, my, mw, mh, BG[k], LINE[k]))
+                    if mh < fs:
+                        continue
                     if mh >= fs * 2.4:
                         parts.append(text(mx + 3, my + fs + 1, cab_id, fs, weight="bold"))
                         parts.append(text(mx + 3, my + fs * 2.2 + 1, f"M{mr * per_row + mc + 1}", fs))
@@ -207,19 +227,25 @@ def draw_screen(kind, screen, idx):
     if kind == "cabinets":
         chains = {}
         for card, (x, y, w, h) in rects:
+            if h < STRIP:
+                continue
             unit = min(w, card[6])
-            chains.setdefault((card[0], card[1]), []).append((card[2], x + w / 2, y + h / 2 + unit * 0.09))
+            py = y + h * 0.78 if min(w, h) < COMPACT else y + h / 2 + unit * 0.09  # small: below the ID
+            chains.setdefault((card[0], card[1]), []).append((card[2], x + w / 2, py))
+        sw, r, sfs, sdy = (2, 6, 9, 3.5) if compact else (3, 9, 13, 5)
         for (_, port), pts in chains.items():
             pts.sort()
             col = port_color(port)
             mid = f"arr{(port - 1) % len(PORT_COLORS)}"
             d = " ".join(f"{'M' if i == 0 else 'L'}{px},{py}" for i, (_, px, py) in enumerate(pts))
-            parts.append(f'<path d="{d}" fill="none" stroke="{col}" stroke-width="3" '
+            parts.append(f'<path d="{d}" fill="none" stroke="{col}" stroke-width="{sw}" '
                          f'stroke-opacity="0.8" marker-mid="url(#{mid})" marker-end="url(#{mid})"/>')
             _, sx, sy = pts[0]
-            parts.append(f'<circle cx="{sx}" cy="{sy}" r="9" fill="{col}"/>')
-            parts.append(text(sx, sy + 5, "S", 13, fill="#000000", anchor="middle", weight="bold"))
+            parts.append(f'<circle cx="{sx}" cy="{sy}" r="{r}" fill="{col}"/>')
+            parts.append(text(sx, sy + sdy, "S", sfs, fill="#000000", anchor="middle", weight="bold"))
 
+    if compact:
+        return parts  # no room for a title over small cabinets; the file name carries it
     title = f"{name} - {'Cabinets' if kind == 'cabinets' else 'Modules'} Mapping  {W}x{H}"
     fs = max(12, min(22, W / len(title) * 1.7))
     tx = min(x for _, (x, y, w, h) in rects if y + h == Y1)
@@ -242,10 +268,11 @@ def svg_doc(parts, x0, y0, W, H):
 
 
 def write(svg, path, W, H):
-    with open(path + ".svg", "w") as f:
+    with open(path + ".svg", "w", encoding="utf-8") as f:
         f.write(svg)
-    cairosvg.svg2png(bytestring=svg.encode(), write_to=path + ".png", output_width=W, output_height=H)
-    print(f"wrote {path}.svg/.png  {W}x{H}")
+    if cairosvg:
+        cairosvg.svg2png(bytestring=svg.encode(), write_to=path + ".png", output_width=W, output_height=H)
+    print(f"wrote {path}.svg{'/.png' if cairosvg else ''}  {W}x{H}")
 
 
 def safe(s):
@@ -258,7 +285,9 @@ def main():
     ap.add_argument("--names", help="comma-separated screen names, in file order")
     ap.add_argument("--module", help="module size WxH in pixels for all screens "
                                      "(default: from PRODUCTS by cabinet size)")
+    ap.add_argument("--out", default=OUT_DIR, help="output folder (default: output/ next to this script)")
     args = ap.parse_args()
+    out_dir = args.out
 
     if args.scr:
         raw, out = load_scr(args.scr)
@@ -267,7 +296,7 @@ def main():
         raw, out, base = [CARDS], UHD, NAME
     names = [n.strip() for n in args.names.split(",")] if args.names else []
 
-    os.makedirs(OUT_DIR, exist_ok=True)
+    os.makedirs(out_dir, exist_ok=True)
     screens = []
     for i, cards in enumerate(raw):
         size = (cards[0][5], cards[0][6])
@@ -281,7 +310,8 @@ def main():
         else:
             name = f"S{i + 1} {product or f'{size[0]}x{size[1]}'}"
         rects = visible_rects(cards)
-        screens.append({"name": name, "rects": rects, "module": module})
+        screens.append({"name": name, "rects": rects, "module": module,
+                        "cards": tuple(sorted({c[0] for c in cards}))})
         x0, y0, x1, y1 = bbox(rects)
         print(f"screen {i + 1}: {name}  at {x0},{y0}  {x1 - x0}x{y1 - y0}  "
               f"{len(cards)} cabinets {size[0]}x{size[1]}  modules {module[0]}x{module[1]}")
@@ -291,20 +321,25 @@ def main():
         prefix = safe(base) if len(screens) == 1 else f"{safe(base)}_{safe(sc['name'])}"
         for kind in ("cabinets", "modules"):
             write(svg_doc(draw_screen(kind, sc, i), x0, y0, x1 - x0, y1 - y0),
-                  os.path.join(OUT_DIR, f"{prefix}_{kind}"), x1 - x0, y1 - y0)
+                  os.path.join(out_dir, f"{prefix}_{kind}"), x1 - x0, y1 - y0)
 
-    # all screens at their position on the sending card output
-    _, _, x1, y1 = bbox([r for sc in screens for r in sc["rects"]])
-    if x1 > out[0] or y1 > out[1]:
-        print(f"note: screens reach {x1}x{y1}, beyond the sending card output {out[0]}x{out[1]}")
-    for kind in ("cabinets", "modules"):
-        parts = [p for i, sc in enumerate(screens) for p in draw_screen(kind, sc, i)]
-        name = f"{safe(base)}_overview_{kind}" if len(screens) > 1 else f"{safe(base)}_{kind}"
-        if len(screens) > 1:
-            write(svg_doc(parts, 0, 0, x1, y1), os.path.join(OUT_DIR, name), x1, y1)
-        W, H = max(out[0], x1), max(out[1], y1)
-        cairosvg.svg2png(bytestring=svg_doc(parts, 0, 0, W, H).encode(), output_width=W, output_height=H,
-                         write_to=os.path.join(OUT_DIR, f"{name}_{W}x{H}.png"))
+    # all screens at their position on the sending card's input; each sending card has its own
+    groups = {}
+    for i, sc in enumerate(screens):
+        groups.setdefault(sc["cards"], []).append(i)
+    for cards, idxs in groups.items():
+        tag = "" if len(groups) == 1 else "_SC" + "+".join(map(str, cards))
+        _, _, x1, y1 = bbox([r for i in idxs for r in screens[i]["rects"]])
+        if x1 > out[0] or y1 > out[1]:
+            print(f"note: {'sending card ' + tag[3:] if tag else 'screens'} reach {x1}x{y1}, "
+                  f"beyond the screen area in the file ({out[0]}x{out[1]})")
+        for kind in ("cabinets", "modules"):
+            parts = [p for i in idxs for p in draw_screen(kind, screens[i], i)]
+            name = f"{safe(base)}{tag}_overview_{kind}" if len(screens) > 1 else f"{safe(base)}_{kind}"
+            if len(idxs) > 1:
+                write(svg_doc(parts, 0, 0, x1, y1), os.path.join(out_dir, name), x1, y1)
+            W, H = max(out[0], x1), max(out[1], y1)
+            write(svg_doc(parts, 0, 0, W, H), os.path.join(out_dir, f"{name}_{W}x{H}"), W, H)
 
 
 if __name__ == "__main__":
