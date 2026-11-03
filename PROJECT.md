@@ -61,4 +61,4 @@ Working generator (`make_grid.py`, `make_scr.py`). 2026-10-12: standard-screen p
 ## Links
 
 - Run: `pip install cairosvg` then `python make_grid.py screens/Showroom_all.scr`
-- Related: `projects\manuals-pipeline`
+- Related: [[projects/manuals-pipeline/PROJECT|manuals pipeline]] (planned integration), [[projects/wall-player/PROJECT|Wall Player]] (C# port of the `.scr` reader + drawing), [[projects/led-mapping-reviews/PROJECT|LED mapping reviews]] (uses `make_grid.py` to draw its maps)
