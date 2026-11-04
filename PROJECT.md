@@ -5,7 +5,7 @@ priority:
 version:
 deadline:
 next: Plan how it feeds the Manuals & LED site pipeline (shared data format with site.json)
-updated: 2026-10-12
+updated: 2026-11-04
 repo: daveleo/Grid_System
 url:
 ---
